@@ -1,203 +1,156 @@
-// ROBUST Button + DS18B20 System with Non-blocking OneWire and Proper Debouncing
+#include <U8g2lib.h>
+#include <Wire.h>
 #include <OneWire.h>
 
-#define MOSFET_PIN 13      
-#define BUTTON_PIN 4       
-#define DS18B20_PIN 25     
-
 // Temperature sensor setup
+#define DS18B20_PIN 17  // Digital pin 17 for DS18B20 data line
 OneWire ds(DS18B20_PIN);
 
-// MOSFET control variables
-bool mosfetState = false;
-bool lastButtonReading = HIGH;
-bool buttonState = HIGH;
-bool lastButtonState = HIGH;
-unsigned long lastDebounceTime = 0;
-const unsigned long DEBOUNCE_DELAY = 50;  // 50ms is more responsive than 200ms
+// Create display object for SH1106 1.3" OLED with I2C
+U8G2_SH1106_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
 
-// NON-BLOCKING Temperature sensor state machine
-enum TempState {
-  TEMP_IDLE,
-  TEMP_START_CONVERSION,
-  TEMP_WAIT_CONVERSION,
-  TEMP_READ_DATA
-};
-
-TempState tempState = TEMP_IDLE;
-float temperature = -999.0;
-byte sensorAddr[8];
-bool sensorFound = false;
-unsigned long tempTimer = 0;
-unsigned long lastTempRequest = 0;
-const unsigned long TEMP_INTERVAL = 1000;  // Request temp every 1 second
-const unsigned long CONVERSION_TIME = 750; // Max conversion time for 12-bit
-
-// Status display timing
-unsigned long lastStatusTime = 0;
-const unsigned long STATUS_INTERVAL = 1000;
-
-// Function to find and cache sensor address (run once)
-bool findSensor() {
-  ds.reset_search();
-  if (ds.search(sensorAddr)) {
-    if (OneWire::crc8(sensorAddr, 7) == sensorAddr[7]) {
-      if (sensorAddr[0] == 0x10 || sensorAddr[0] == 0x28) {
-        Serial.println("DS18B20 sensor found and cached!");
-        return true;
-      }
-    }
-  }
-  Serial.println("DS18B20 sensor not found!");
-  return false;
-}
-
-// NON-BLOCKING temperature reading state machine
-void updateTemperature() {
-  switch (tempState) {
-    case TEMP_IDLE:
-      // Check if it's time to start a new reading
-      if (millis() - lastTempRequest >= TEMP_INTERVAL) {
-        if (sensorFound) {
-          tempState = TEMP_START_CONVERSION;
-        }
-        lastTempRequest = millis();
-      }
-      break;
-
-    case TEMP_START_CONVERSION:
-      // Start conversion (non-blocking)
-      ds.reset();
-      ds.select(sensorAddr);
-      ds.write(0x44, 1);  // Start conversion
-      tempTimer = millis();
-      tempState = TEMP_WAIT_CONVERSION;
-      break;
-
-    case TEMP_WAIT_CONVERSION:
-      // Wait for conversion to complete (non-blocking check)
-      if (millis() - tempTimer >= CONVERSION_TIME) {
-        tempState = TEMP_READ_DATA;
-      }
-      break;
-
-    case TEMP_READ_DATA:
-      // Read the temperature data
-      byte data[9];
-      ds.reset();
-      ds.select(sensorAddr);
-      ds.write(0xBE);
-
-      // Read 9 bytes
-      for (int i = 0; i < 9; i++) {
-        data[i] = ds.read();
-      }
-
-      // Verify CRC
-      if (OneWire::crc8(data, 8) == data[8]) {
-        // Extract temperature
-        int16_t raw = (data[1] << 8) | data[0];
-        temperature = (float)raw / 16.0;
-      } else {
-        Serial.println("CRC Error in temperature reading");
-      }
-
-      tempState = TEMP_IDLE;
-      break;
-  }
-}
-
-// ROBUST button debouncing with state machine
-bool readButtonDebounced() {
-  bool reading = digitalRead(BUTTON_PIN);
-  bool buttonPressed = false;
-
-  // Check if button state changed
-  if (reading != lastButtonReading) {
-    lastDebounceTime = millis();
-  }
-
-  // Handle millis() rollover safely
-  unsigned long timeDiff = millis() - lastDebounceTime;
-  if (timeDiff >= DEBOUNCE_DELAY) {
-    // Button state is stable
-    if (reading != buttonState) {
-      buttonState = reading;
-      
-      // Detect button press (HIGH to LOW transition)
-      if (buttonState == LOW && lastButtonState == HIGH) {
-        buttonPressed = true;
-      }
-      lastButtonState = buttonState;
-    }
-  }
-
-  lastButtonReading = reading;
-  return buttonPressed;
-}
+// Variables for temperature reading
+float currentTemperature = -999.0;  // Initialize with error value
+unsigned long lastTempRead = 0;
+const unsigned long TEMP_READ_INTERVAL = 1000;  // Read temperature every 2 seconds
 
 void setup(void) {
+  // Initialize Serial Monitor for debugging
   Serial.begin(115200);
-  Serial.println("=== ROBUST DS18B20 + MOSFET CONTROL ===");
-  Serial.println("Non-blocking temperature reading with proper debouncing");
+  Serial.println("Starting OLED + Temperature Sensor...");
   
-  // Initialize pins
-  pinMode(BUTTON_PIN, INPUT_PULLUP);
-  pinMode(MOSFET_PIN, OUTPUT);
-  digitalWrite(MOSFET_PIN, LOW);
+  // Initialize I2C with custom pins (SDA=21, SCL=22)
+  Wire.begin(21, 22);
   
-  // Find and cache sensor address
-  Serial.println("Searching for DS18B20 sensor...");
-  sensorFound = findSensor();
+  // Initialize the display
+  u8g2.begin();
   
-  if (sensorFound) {
-    Serial.print("Sensor address: ");
-    for (int i = 0; i < 8; i++) {
-      Serial.printf("%02X", sensorAddr[i]);
-      if (i < 7) Serial.print(":");
-    }
-    Serial.println();
-  } else {
-    Serial.println("ERROR: No DS18B20 sensor found!");
-    Serial.println("Check wiring and 4.7k pull-up resistor");
-  }
+  // Test if display is working
+  displayWelcomeMessage();
   
-  Serial.println();
-  Serial.println("=== IMPROVEMENTS ===");
-  Serial.println("✓ Non-blocking temperature reading");
-  Serial.println("✓ Robust button debouncing");
-  Serial.println("✓ Sensor address caching");
-  Serial.println("✓ No system freezing");
-  Serial.println("✓ Excellent button responsiveness");
-  Serial.println();
-  
-  // Initial display
-  Serial.printf("Mosfet: %s                          Temperature: %.0f\n",
-    mosfetState ? "ON " : "OFF", temperature);
+  // Initial temperature reading
+  currentTemperature = readTemperature();
 }
 
 void loop(void) {
-  // NON-BLOCKING temperature reading - never blocks the system
-  updateTemperature();
+  // Read temperature at intervals
+  if (millis() - lastTempRead >= TEMP_READ_INTERVAL) {
+    currentTemperature = readTemperature();
+    lastTempRead = millis();
+  }
   
-  // ROBUST button handling - always responsive
-  if (readButtonDebounced()) {
-    // Toggle MOSFET
-    mosfetState = !mosfetState;
-    digitalWrite(MOSFET_PIN, mosfetState ? HIGH : LOW);
+  // Clear the screen and display temperature
+  displayTemperature();
+  
+  delay(100);  // Small delay for stability
+}
+
+float readTemperature() {
+  byte data[12];
+  byte addr[8];
+  
+  // Search for DS18B20 on the bus
+  if (!ds.search(addr)) {
+    Serial.println("No temperature sensor found!");
+    ds.reset_search();
+    return -999.0;  // Error value
+  }
+  
+  // Verify CRC of the address
+  if (OneWire::crc8(addr, 7) != addr[7]) {
+    Serial.println("CRC is not valid!");
+    return -999.0;
+  }
+  
+  // Check if device is recognized (should be 0x10 or 0x28 for DS18B20)
+  if (addr[0] != 0x10 && addr[0] != 0x28) {
+    Serial.println("Device is not a DS18B20 family device.");
+    return -999.0;
+  }
+  
+  // Start temperature conversion
+  ds.reset();
+  ds.select(addr);
+  ds.write(0x44, 1);  // Start conversion with parasite power
+  
+  delay(1000);  // Wait for conversion (could be up to 750ms)
+  
+  // Check if conversion is complete
+  byte present = ds.reset();
+  ds.select(addr);
+  ds.write(0xBE);  // Read Scratchpad
+  
+  // Read 9 bytes of data
+  for (int i = 0; i < 9; i++) {
+    data[i] = ds.read();
+  }
+  
+  ds.reset_search();
+  
+  // Extract temperature from data
+  byte MSB = data[1];
+  byte LSB = data[0];
+  
+  // Convert to temperature using two's complement
+  float tempRead = ((MSB << 8) | LSB);
+  float temperatureSum = tempRead / 16.0;  // DS18B20 resolution
+  
+  Serial.print("Temperature: ");
+  Serial.print(temperatureSum);
+  Serial.println(" °C");
+  
+  return temperatureSum;
+}
+
+void displayTemperature() {
+  u8g2.clearBuffer();
+  
+  // Draw border
+  u8g2.drawFrame(0, 0, 128, 64);
+  
+  // Title
+  u8g2.setFont(u8g2_font_ncenB10_tr);
+  u8g2.drawStr(25, 15, "Temperature");
+  
+  // Display temperature
+  if (currentTemperature > -999.0) {
+    // Temperature value
+    u8g2.setFont(u8g2_font_ncenB18_tr);
+    char tempStr[10];
+    dtostrf(currentTemperature, 5, 1, tempStr);
     
-    // Immediate status display
-    Serial.printf("Mosfet: %s                          Temperature: %.0f\n",
-      mosfetState ? "ON " : "OFF", temperature);
+    // Center the temperature reading
+    int tempWidth = u8g2.getStrWidth(tempStr);
+    int tempX = (128 - tempWidth - 15) / 2;  // Account for °C text
+    u8g2.drawStr(tempX, 40, tempStr);
+    
+    // Degree symbol and C
+    u8g2.setFont(u8g2_font_ncenB10_tr);
+    u8g2.drawStr(tempX + tempWidth + 2, 40, "°C");
+    
+    // Status
+    u8g2.setFont(u8g2_font_6x10_tr);
+    u8g2.drawStr(35, 55, "Sensor Active");
+  } else {
+    // Error display
+    u8g2.setFont(u8g2_font_ncenB10_tr);
+    u8g2.drawStr(20, 35, "Sensor Error!");
+    u8g2.setFont(u8g2_font_6x10_tr);
+    u8g2.drawStr(15, 50, "Check Connection");
   }
   
-  // Periodic status display
-  if (millis() - lastStatusTime >= STATUS_INTERVAL) {
-    Serial.printf("Mosfet: %s                          Temperature: %.0f\n",
-      mosfetState ? "ON " : "OFF", temperature);
-    lastStatusTime = millis();
-  }
+  u8g2.sendBuffer();
+}
+
+void displayWelcomeMessage() {
+  u8g2.clearBuffer();
+  u8g2.setFont(u8g2_font_ncenB10_tr);
+  u8g2.drawStr(15, 20, "OLED + DS18B20");
+  u8g2.drawStr(30, 35, "Starting...");
+  u8g2.setFont(u8g2_font_6x10_tr);
+  u8g2.drawStr(20, 50, "Temperature Sensor");
+  u8g2.sendBuffer();
   
-  // Small delay for system stability (non-blocking)
-  delay(1);  // Much smaller delay - system stays responsive
+  Serial.println("Welcome message displayed!");
+  delay(3000);
 }
