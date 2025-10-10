@@ -1,5 +1,5 @@
-// ESP32 SSR MOSFET Tester
-// Tests the 3 MOSFET gates that control SSRs for heating elements
+// ESP32 Motor Relay MOSFET Tester
+// Tests the MOSFET gate that controls the motor relay
 // Use with multimeter to verify proper operation
 
 #include <U8g2lib.h>
@@ -9,16 +9,14 @@
 U8G2_SH1106_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
 
 // Button pins
-#define BTN_1 32  // Select SSR 1
-#define BTN_2 33  // Select SSR 2
-#define BTN_3 27  // Select SSR 3
-#define BTN_4 26  // Toggle current SSR ON/OFF
-#define BTN_5 0   // All OFF (Emergency stop)
+#define BTN_1 32  // Toggle motor ON/OFF
+#define BTN_2 33  // Not used
+#define BTN_3 27  // Not used
+#define BTN_4 26  // Not used
+#define BTN_5 0   // Emergency stop (OFF)
 
-// SSR MOSFET Control Pins
-#define SSR_1 4   // Heating Element Zone 1
-#define SSR_2 17  // Heating Element Zone 2
-#define SSR_3 14  // Heating Element Zone 3
+// Motor Relay Control Pin
+#define MOTOR_RELAY 16  // GPIO16 controls motor relay
 
 // Button debouncing
 const int NUM_BUTTONS = 5;
@@ -29,15 +27,13 @@ bool lastButtonState[NUM_BUTTONS] = {HIGH, HIGH, HIGH, HIGH, HIGH};
 unsigned long lastDebounceTime[NUM_BUTTONS] = {0, 0, 0, 0, 0};
 const unsigned long DEBOUNCE_DELAY = 50;
 
-// SSR control
-const int ssrPins[3] = {SSR_1, SSR_2, SSR_3};
-bool ssrStates[3] = {false, false, false};
-int currentSSR = 0;  // 0 = SSR1, 1 = SSR2, 2 = SSR3
+// Motor control
+bool motorState = false;
 
 void setup() {
   Serial.begin(115200);
   delay(100);
-  Serial.println("\n=== SSR MOSFET Tester ===");
+  Serial.println("\n=== Motor Relay MOSFET Tester ===");
   
   // Initialize I2C
   Serial.println("Initializing I2C...");
@@ -54,18 +50,14 @@ void setup() {
     pinMode(buttonPins[i], INPUT_PULLUP);
   }
   
-  // Initialize SSR pins as outputs (all OFF)
-  Serial.println("Initializing SSR MOSFET pins...");
-  for(int i = 0; i < 3; i++) {
-    pinMode(ssrPins[i], OUTPUT);
-    digitalWrite(ssrPins[i], LOW);
-    ssrStates[i] = false;
-    Serial.print("SSR ");
-    Serial.print(i + 1);
-    Serial.print(" (GPIO");
-    Serial.print(ssrPins[i]);
-    Serial.println(") = OFF");
-  }
+  // Initialize Motor Relay pin
+  Serial.println("Initializing Motor Relay MOSFET pin...");
+  pinMode(MOTOR_RELAY, OUTPUT);
+  digitalWrite(MOTOR_RELAY, LOW);  // Start with motor OFF
+  
+  Serial.print("Motor Relay (GPIO");
+  Serial.print(MOTOR_RELAY);
+  Serial.println(") = OFF");
   
   // Welcome screen
   displayWelcomeScreen();
@@ -74,11 +66,8 @@ void setup() {
   updateDisplay();
   
   Serial.println("\n=== System Ready ===");
-  Serial.println("BTN1 = Select SSR 1");
-  Serial.println("BTN2 = Select SSR 2");
-  Serial.println("BTN3 = Select SSR 3");
-  Serial.println("BTN4 = Toggle selected SSR ON/OFF");
-  Serial.println("BTN5 = ALL OFF (Emergency Stop)");
+  Serial.println("BTN1 = Toggle Motor ON/OFF");
+  Serial.println("BTN5 = Emergency Stop (OFF)");
   Serial.println("====================\n");
 }
 
@@ -99,41 +88,28 @@ void handleButton(int buttonNum) {
   Serial.println(" pressed <<<");
   
   switch(buttonNum) {
-    case 1:  // Select SSR 1
-      currentSSR = 0;
-      Serial.println("SSR 1 selected (GPIO4)");
-      break;
+    case 1:  // Toggle motor ON/OFF
+      motorState = !motorState;
+      digitalWrite(MOTOR_RELAY, motorState ? HIGH : LOW);
       
-    case 2:  // Select SSR 2
-      currentSSR = 1;
-      Serial.println("SSR 2 selected (GPIO17)");
-      break;
+      Serial.print("Motor = ");
+      Serial.println(motorState ? "ON" : "OFF");
+      Serial.print("Expected voltage at GPIO16: ");
+      Serial.println(motorState ? "~3.3V" : "~0V");
       
-    case 3:  // Select SSR 3
-      currentSSR = 2;
-      Serial.println("SSR 3 selected (GPIO14)");
-      break;
-      
-    case 4:  // Toggle current SSR
-      ssrStates[currentSSR] = !ssrStates[currentSSR];
-      digitalWrite(ssrPins[currentSSR], ssrStates[currentSSR] ? HIGH : LOW);
-      Serial.print("SSR ");
-      Serial.print(currentSSR + 1);
-      Serial.print(" (GPIO");
-      Serial.print(ssrPins[currentSSR]);
-      Serial.print(") = ");
-      Serial.println(ssrStates[currentSSR] ? "ON" : "OFF");
-      break;
-      
-    case 5:  // Emergency stop - ALL OFF
-      Serial.println("!!! EMERGENCY STOP - ALL SSRs OFF !!!");
-      for(int i = 0; i < 3; i++) {
-        ssrStates[i] = false;
-        digitalWrite(ssrPins[i], LOW);
-        Serial.print("SSR ");
-        Serial.print(i + 1);
-        Serial.println(" = OFF");
+      if(motorState) {
+        Serial.println("Relay should CLICK and activate");
+      } else {
+        Serial.println("Relay should CLICK and deactivate");
       }
+      break;
+      
+    case 5:  // Emergency stop
+      Serial.println("!!! EMERGENCY STOP - Motor OFF !!!");
+      motorState = false;
+      digitalWrite(MOTOR_RELAY, LOW);
+      Serial.println("Motor = OFF");
+      Serial.println("Expected voltage at GPIO16: ~0V");
       break;
   }
   
@@ -148,43 +124,31 @@ void updateDisplay() {
   
   // Title
   u8g2.setFont(u8g2_font_ncenB08_tr);
-  u8g2.drawStr(22, 10, "SSR MOSFET Test");
+  u8g2.drawStr(15, 10, "Motor Relay Test");
   u8g2.drawHLine(2, 12, 124);
   
-  // Current SSR selection indicator
+  // GPIO info
   u8g2.setFont(u8g2_font_6x10_tr);
-  char selStr[20];
-  sprintf(selStr, "Selected: SSR %d", currentSSR + 1);
-  int selX = (128 - u8g2.getStrWidth(selStr)) / 2;
-  u8g2.drawStr(selX, 22, selStr);
+  u8g2.drawStr(38, 24, "GPIO 16");
   
-  // Show GPIO pin
-  u8g2.setFont(u8g2_font_5x7_tr);
-  char gpioStr[20];
-  sprintf(gpioStr, "(GPIO %d)", ssrPins[currentSSR]);
-  int gpioX = (128 - u8g2.getStrWidth(gpioStr)) / 2;
-  u8g2.drawStr(gpioX, 30, gpioStr);
+  // Motor state - LARGE
+  u8g2.setFont(u8g2_font_ncenB24_tr);
+  const char* stateText = motorState ? "ON" : "OFF";
+  int stateWidth = u8g2.getStrWidth(stateText);
+  int stateX = (128 - stateWidth) / 2;
+  u8g2.drawStr(stateX, 46, stateText);
   
-  // Show status of all SSRs
+  // Status indicator
   u8g2.setFont(u8g2_font_6x10_tr);
-  for(int i = 0; i < 3; i++) {
-    char statusStr[15];
-    sprintf(statusStr, "SSR%d: %s", i + 1, ssrStates[i] ? "ON" : "OFF");
-    
-    // Highlight selected SSR
-    if(i == currentSSR) {
-      u8g2.drawBox(10, 34 + (i * 8), 108, 9);
-      u8g2.setColorIndex(0);  // Inverted color
-      u8g2.drawStr(15, 41 + (i * 8), statusStr);
-      u8g2.setColorIndex(1);  // Normal color
-    } else {
-      u8g2.drawStr(15, 41 + (i * 8), statusStr);
-    }
+  if(motorState) {
+    u8g2.drawStr(30, 56, "Relay Active");
+  } else {
+    u8g2.drawStr(26, 56, "Relay Inactive");
   }
   
   // Button help
   u8g2.setFont(u8g2_font_4x6_tr);
-  u8g2.drawStr(2, 60, "1-3:Sel 4:Toggle 5:AllOff");
+  u8g2.drawStr(10, 62, "BTN1:Toggle BTN5:Stop");
   
   u8g2.sendBuffer();
 }
@@ -192,10 +156,10 @@ void updateDisplay() {
 void displayWelcomeScreen() {
   u8g2.clearBuffer();
   u8g2.setFont(u8g2_font_ncenB10_tr);
-  u8g2.drawStr(10, 20, "SSR MOSFET");
-  u8g2.drawStr(35, 35, "Tester");
+  u8g2.drawStr(5, 20, "Motor Relay");
+  u8g2.drawStr(18, 35, "MOSFET Test");
   u8g2.setFont(u8g2_font_6x10_tr);
-  u8g2.drawStr(10, 50, "All SSRs OFF");
+  u8g2.drawStr(25, 50, "Motor OFF");
   u8g2.sendBuffer();
   delay(2000);
 }
