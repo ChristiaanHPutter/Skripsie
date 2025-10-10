@@ -1,24 +1,24 @@
-// ESP32 DS18B20 Temperature Sensor Identifier
-// This tool helps you identify and label multiple DS18B20 sensors
-// by their unique OneWire addresses
+// ESP32 SSR MOSFET Tester
+// Tests the 3 MOSFET gates that control SSRs for heating elements
+// Use with multimeter to verify proper operation
 
 #include <U8g2lib.h>
 #include <Wire.h>
-#include <OneWire.h>
-
-// Hardware setup
-#define DS18B20_PIN 25  // OneWire data pin
-OneWire ds(DS18B20_PIN);
 
 // OLED Display
 U8G2_SH1106_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
 
 // Button pins
-#define BTN_1 32  // Scan for sensors
-#define BTN_2 33  // Previous sensor
-#define BTN_3 27  // Next sensor
-#define BTN_4 26  // Read temperature from current sensor
-#define BTN_5 0   // Not used
+#define BTN_1 32  // Select SSR 1
+#define BTN_2 33  // Select SSR 2
+#define BTN_3 27  // Select SSR 3
+#define BTN_4 26  // Toggle current SSR ON/OFF
+#define BTN_5 0   // All OFF (Emergency stop)
+
+// SSR MOSFET Control Pins
+#define SSR_1 4   // Heating Element Zone 1
+#define SSR_2 17  // Heating Element Zone 2
+#define SSR_3 14  // Heating Element Zone 3
 
 // Button debouncing
 const int NUM_BUTTONS = 5;
@@ -29,37 +29,57 @@ bool lastButtonState[NUM_BUTTONS] = {HIGH, HIGH, HIGH, HIGH, HIGH};
 unsigned long lastDebounceTime[NUM_BUTTONS] = {0, 0, 0, 0, 0};
 const unsigned long DEBOUNCE_DELAY = 50;
 
-// Sensor storage
-const int MAX_SENSORS = 10;
-byte sensorAddresses[MAX_SENSORS][8];
-int sensorCount = 0;
-int currentSensorIndex = 0;
-
-// Temperature reading
-float lastTemperature = -999.0;
+// SSR control
+const int ssrPins[3] = {SSR_1, SSR_2, SSR_3};
+bool ssrStates[3] = {false, false, false};
+int currentSSR = 0;  // 0 = SSR1, 1 = SSR2, 2 = SSR3
 
 void setup() {
   Serial.begin(115200);
-  Serial.println("=== DS18B20 Sensor Identifier ===");
+  delay(100);
+  Serial.println("\n=== SSR MOSFET Tester ===");
   
   // Initialize I2C
+  Serial.println("Initializing I2C...");
   Wire.begin(21, 22);
+  delay(100);
   
   // Initialize display
+  Serial.println("Initializing display...");
   u8g2.begin();
   
   // Initialize buttons
+  Serial.println("Initializing buttons...");
   for(int i = 0; i < NUM_BUTTONS; i++) {
     pinMode(buttonPins[i], INPUT_PULLUP);
+  }
+  
+  // Initialize SSR pins as outputs (all OFF)
+  Serial.println("Initializing SSR MOSFET pins...");
+  for(int i = 0; i < 3; i++) {
+    pinMode(ssrPins[i], OUTPUT);
+    digitalWrite(ssrPins[i], LOW);
+    ssrStates[i] = false;
+    Serial.print("SSR ");
+    Serial.print(i + 1);
+    Serial.print(" (GPIO");
+    Serial.print(ssrPins[i]);
+    Serial.println(") = OFF");
   }
   
   // Welcome screen
   displayWelcomeScreen();
   
-  // Initial scan
-  scanForSensors();
+  // Show main screen
+  updateDisplay();
   
-  displayMainScreen();
+  Serial.println("\n=== System Ready ===");
+  Serial.println("BTN1 = Select SSR 1");
+  Serial.println("BTN2 = Select SSR 2");
+  Serial.println("BTN3 = Select SSR 3");
+  Serial.println("BTN4 = Toggle selected SSR ON/OFF");
+  Serial.println("BTN5 = ALL OFF (Emergency Stop)");
+  Serial.println("====================\n");
 }
 
 void loop() {
@@ -74,131 +94,53 @@ void loop() {
 }
 
 void handleButton(int buttonNum) {
-  Serial.print("Button ");
+  Serial.print(">>> Button ");
   Serial.print(buttonNum);
-  Serial.println(" pressed");
+  Serial.println(" pressed <<<");
   
   switch(buttonNum) {
-    case 1:  // Scan for sensors
-      scanForSensors();
-      currentSensorIndex = 0;
-      lastTemperature = -999.0;
+    case 1:  // Select SSR 1
+      currentSSR = 0;
+      Serial.println("SSR 1 selected (GPIO4)");
       break;
       
-    case 2:  // Previous sensor
-      if(sensorCount > 0) {
-        currentSensorIndex--;
-        if(currentSensorIndex < 0) {
-          currentSensorIndex = sensorCount - 1;
-        }
-        lastTemperature = -999.0;
-      }
+    case 2:  // Select SSR 2
+      currentSSR = 1;
+      Serial.println("SSR 2 selected (GPIO17)");
       break;
       
-    case 3:  // Next sensor
-      if(sensorCount > 0) {
-        currentSensorIndex++;
-        if(currentSensorIndex >= sensorCount) {
-          currentSensorIndex = 0;
-        }
-        lastTemperature = -999.0;
-      }
+    case 3:  // Select SSR 3
+      currentSSR = 2;
+      Serial.println("SSR 3 selected (GPIO14)");
       break;
       
-    case 4:  // Read temperature
-      if(sensorCount > 0) {
-        lastTemperature = readTemperatureFromSensor(currentSensorIndex);
+    case 4:  // Toggle current SSR
+      ssrStates[currentSSR] = !ssrStates[currentSSR];
+      digitalWrite(ssrPins[currentSSR], ssrStates[currentSSR] ? HIGH : LOW);
+      Serial.print("SSR ");
+      Serial.print(currentSSR + 1);
+      Serial.print(" (GPIO");
+      Serial.print(ssrPins[currentSSR]);
+      Serial.print(") = ");
+      Serial.println(ssrStates[currentSSR] ? "ON" : "OFF");
+      break;
+      
+    case 5:  // Emergency stop - ALL OFF
+      Serial.println("!!! EMERGENCY STOP - ALL SSRs OFF !!!");
+      for(int i = 0; i < 3; i++) {
+        ssrStates[i] = false;
+        digitalWrite(ssrPins[i], LOW);
+        Serial.print("SSR ");
+        Serial.print(i + 1);
+        Serial.println(" = OFF");
       }
       break;
   }
   
-  displayMainScreen();
+  updateDisplay();
 }
 
-void scanForSensors() {
-  Serial.println("Scanning for DS18B20 sensors...");
-  
-  sensorCount = 0;
-  ds.reset_search();
-  
-  displayScanningScreen();
-  
-  byte addr[8];
-  while(ds.search(addr)) {
-    // Verify CRC
-    if(OneWire::crc8(addr, 7) != addr[7]) {
-      Serial.println("CRC invalid, skipping device");
-      continue;
-    }
-    
-    // Check if it's a DS18B20
-    if(addr[0] != 0x10 && addr[0] != 0x28) {
-      Serial.println("Not a DS18B20, skipping");
-      continue;
-    }
-    
-    // Store the address
-    if(sensorCount < MAX_SENSORS) {
-      for(int i = 0; i < 8; i++) {
-        sensorAddresses[sensorCount][i] = addr[i];
-      }
-      
-      Serial.print("Sensor ");
-      Serial.print(sensorCount + 1);
-      Serial.print(" found: ");
-      printAddress(addr);
-      Serial.println();
-      
-      sensorCount++;
-    }
-  }
-  
-  ds.reset_search();
-  
-  Serial.print("Total sensors found: ");
-  Serial.println(sensorCount);
-  
-  delay(500);  // Brief pause to show scanning screen
-}
-
-float readTemperatureFromSensor(int index) {
-  if(index < 0 || index >= sensorCount) {
-    return -999.0;
-  }
-  
-  byte* addr = sensorAddresses[index];
-  byte data[12];
-  
-  // Start conversion
-  ds.reset();
-  ds.select(addr);
-  ds.write(0x44, 1);
-  
-  delay(1000);  // Wait for conversion
-  
-  // Read scratchpad
-  ds.reset();
-  ds.select(addr);
-  ds.write(0xBE);
-  
-  for(int i = 0; i < 9; i++) {
-    data[i] = ds.read();
-  }
-  
-  // Calculate temperature
-  int16_t raw = (data[1] << 8) | data[0];
-  float celsius = (float)raw / 16.0;
-  
-  Serial.print("Temperature from sensor ");
-  Serial.print(index + 1);
-  Serial.print(": ");
-  Serial.print(celsius);
-  Serial.println(" °C");
-  
-  return celsius;
-}
-
-void displayMainScreen() {
+void updateDisplay() {
   u8g2.clearBuffer();
   
   // Border
@@ -206,50 +148,43 @@ void displayMainScreen() {
   
   // Title
   u8g2.setFont(u8g2_font_ncenB08_tr);
-  u8g2.drawStr(20, 10, "Sensor ID Tool");
+  u8g2.drawStr(22, 10, "SSR MOSFET Test");
   u8g2.drawHLine(2, 12, 124);
   
-  if(sensorCount == 0) {
-    // No sensors found
-    u8g2.setFont(u8g2_font_6x10_tr);
-    u8g2.drawStr(15, 28, "No sensors found");
-    u8g2.drawStr(10, 40, "Press BTN1 to scan");
-  } else {
-    // Show current sensor info
-    u8g2.setFont(u8g2_font_6x10_tr);
+  // Current SSR selection indicator
+  u8g2.setFont(u8g2_font_6x10_tr);
+  char selStr[20];
+  sprintf(selStr, "Selected: SSR %d", currentSSR + 1);
+  int selX = (128 - u8g2.getStrWidth(selStr)) / 2;
+  u8g2.drawStr(selX, 22, selStr);
+  
+  // Show GPIO pin
+  u8g2.setFont(u8g2_font_5x7_tr);
+  char gpioStr[20];
+  sprintf(gpioStr, "(GPIO %d)", ssrPins[currentSSR]);
+  int gpioX = (128 - u8g2.getStrWidth(gpioStr)) / 2;
+  u8g2.drawStr(gpioX, 30, gpioStr);
+  
+  // Show status of all SSRs
+  u8g2.setFont(u8g2_font_6x10_tr);
+  for(int i = 0; i < 3; i++) {
+    char statusStr[15];
+    sprintf(statusStr, "SSR%d: %s", i + 1, ssrStates[i] ? "ON" : "OFF");
     
-    // Sensor count and index
-    char countStr[30];
-    sprintf(countStr, "Sensor %d of %d", currentSensorIndex + 1, sensorCount);
-    int x = (128 - u8g2.getStrWidth(countStr)) / 2;
-    u8g2.drawStr(x, 22, countStr);
-    
-    // Address (split into two lines for readability)
-    u8g2.setFont(u8g2_font_5x7_tr);
-    char addrStr1[20];
-    char addrStr2[20];
-    byte* addr = sensorAddresses[currentSensorIndex];
-    
-    sprintf(addrStr1, "%02X%02X%02X%02X", addr[0], addr[1], addr[2], addr[3]);
-    sprintf(addrStr2, "%02X%02X%02X%02X", addr[4], addr[5], addr[6], addr[7]);
-    
-    u8g2.drawStr(20, 32, addrStr1);
-    u8g2.drawStr(20, 40, addrStr2);
-    
-    // Temperature if read
-    if(lastTemperature > -999.0) {
-      char tempStr[15];
-      dtostrf(lastTemperature, 5, 1, tempStr);
-      strcat(tempStr, " C");
-      u8g2.setFont(u8g2_font_6x10_tr);
-      int tx = (128 - u8g2.getStrWidth(tempStr)) / 2;
-      u8g2.drawStr(tx, 50, tempStr);
+    // Highlight selected SSR
+    if(i == currentSSR) {
+      u8g2.drawBox(10, 34 + (i * 8), 108, 9);
+      u8g2.setColorIndex(0);  // Inverted color
+      u8g2.drawStr(15, 41 + (i * 8), statusStr);
+      u8g2.setColorIndex(1);  // Normal color
+    } else {
+      u8g2.drawStr(15, 41 + (i * 8), statusStr);
     }
   }
   
   // Button help
   u8g2.setFont(u8g2_font_4x6_tr);
-  u8g2.drawStr(2, 60, "1:Scan 2:< 3:> 4:Temp");
+  u8g2.drawStr(2, 60, "1-3:Sel 4:Toggle 5:AllOff");
   
   u8g2.sendBuffer();
 }
@@ -257,21 +192,12 @@ void displayMainScreen() {
 void displayWelcomeScreen() {
   u8g2.clearBuffer();
   u8g2.setFont(u8g2_font_ncenB10_tr);
-  u8g2.drawStr(8, 20, "DS18B20 Sensor");
-  u8g2.drawStr(25, 35, "Identifier");
+  u8g2.drawStr(10, 20, "SSR MOSFET");
+  u8g2.drawStr(35, 35, "Tester");
   u8g2.setFont(u8g2_font_6x10_tr);
-  u8g2.drawStr(28, 50, "Starting...");
+  u8g2.drawStr(10, 50, "All SSRs OFF");
   u8g2.sendBuffer();
   delay(2000);
-}
-
-void displayScanningScreen() {
-  u8g2.clearBuffer();
-  u8g2.setFont(u8g2_font_ncenB10_tr);
-  u8g2.drawStr(25, 30, "Scanning...");
-  u8g2.setFont(u8g2_font_6x10_tr);
-  u8g2.drawStr(15, 45, "Looking for sensors");
-  u8g2.sendBuffer();
 }
 
 bool readButtonDebounced(int buttonIndex) {
@@ -295,12 +221,4 @@ bool readButtonDebounced(int buttonIndex) {
   
   lastButtonReading[buttonIndex] = reading;
   return buttonPressed;
-}
-
-void printAddress(byte* addr) {
-  for(int i = 0; i < 8; i++) {
-    if(addr[i] < 16) Serial.print("0");
-    Serial.print(addr[i], HEX);
-    if(i < 7) Serial.print(":");
-  }
 }
