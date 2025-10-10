@@ -3,7 +3,7 @@
 #include <OneWire.h>
 
 // Temperature sensor setup
-#define DS18B20_PIN 17  // Digital pin 17 for DS18B20 data line
+#define DS18B20_PIN 25  // Digital pin 17 for DS18B20 data line
 OneWire ds(DS18B20_PIN);
 
 // Create display object for SH1106 1.3" OLED with I2C
