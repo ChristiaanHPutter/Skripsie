@@ -1,29 +1,26 @@
-// ESP32 Button and LED Control with SH1106 OLED Display
-// Using U8g2 library for 1.3" SH1106 OLED
-// Based on your working code structure
+// ESP32 DS18B20 Temperature Sensor Identifier
+// This tool helps you identify and label multiple DS18B20 sensors
+// by their unique OneWire addresses
 
 #include <U8g2lib.h>
 #include <Wire.h>
+#include <OneWire.h>
 
-// Create display object for SH1106 1.3" OLED with I2C
+// Hardware setup
+#define DS18B20_PIN 25  // OneWire data pin
+OneWire ds(DS18B20_PIN);
+
+// OLED Display
 U8G2_SH1106_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
 
-// Pin Definitions - Buttons
-#define BTN_1 32
-#define BTN_2 33
-#define BTN_3 27
-#define BTN_4 26
-#define BTN_5 0
+// Button pins
+#define BTN_1 32  // Scan for sensors
+#define BTN_2 33  // Previous sensor
+#define BTN_3 27  // Next sensor
+#define BTN_4 26  // Read temperature from current sensor
+#define BTN_5 0   // Not used
 
-// Pin Definitions - LEDs
-#define LED_1 18
-#define LED_2 19
-#define LED_3 23
-#define LED_4 13
-#define LED_5 5
-#define LED_6 15
-
-// Button debouncing variables
+// Button debouncing
 const int NUM_BUTTONS = 5;
 const int buttonPins[NUM_BUTTONS] = {BTN_1, BTN_2, BTN_3, BTN_4, BTN_5};
 bool lastButtonReading[NUM_BUTTONS] = {HIGH, HIGH, HIGH, HIGH, HIGH};
@@ -32,111 +29,249 @@ bool lastButtonState[NUM_BUTTONS] = {HIGH, HIGH, HIGH, HIGH, HIGH};
 unsigned long lastDebounceTime[NUM_BUTTONS] = {0, 0, 0, 0, 0};
 const unsigned long DEBOUNCE_DELAY = 50;
 
-// LED array for easy control
-const int ledPins[6] = {LED_1, LED_2, LED_3, LED_4, LED_5, LED_6};
+// Sensor storage
+const int MAX_SENSORS = 10;
+byte sensorAddresses[MAX_SENSORS][8];
+int sensorCount = 0;
+int currentSensorIndex = 0;
 
-// LED cycling variables
-int currentLED = 0;
-unsigned long lastLEDUpdate = 0;
-const unsigned long LED_CYCLE_INTERVAL = 500;  // 500ms per LED
-bool ledCyclingActive = false;
+// Temperature reading
+float lastTemperature = -999.0;
 
-// Last pressed button
-int lastPressedButton = 0;
-
-void setup(void) {
+void setup() {
   Serial.begin(115200);
-  Serial.println("=== ESP32 Button + LED + OLED System ===");
+  Serial.println("=== DS18B20 Sensor Identifier ===");
   
-  // Initialize I2C with custom pins (SDA=21, SCL=22)
+  // Initialize I2C
   Wire.begin(21, 22);
   
-  // Initialize the U8g2 display
+  // Initialize display
   u8g2.begin();
   
-  Serial.println("SH1106 OLED Display initialized!");
-  
-  // Display welcome message
-  displayWelcomeScreen();
-  
-  // Initialize button pins with internal pull-ups
+  // Initialize buttons
   for(int i = 0; i < NUM_BUTTONS; i++) {
     pinMode(buttonPins[i], INPUT_PULLUP);
-    Serial.print("Button ");
-    Serial.print(i + 1);
-    Serial.print(" on GPIO ");
-    Serial.println(buttonPins[i]);
   }
   
-  // Initialize LED pins
-  for(int i = 0; i < 6; i++) {
-    pinMode(ledPins[i], OUTPUT);
-    digitalWrite(ledPins[i], LOW);
-    Serial.print("LED ");
-    Serial.print(i + 1);
-    Serial.print(" on GPIO ");
-    Serial.println(ledPins[i]);
-  }
+  // Welcome screen
+  displayWelcomeScreen();
   
-  Serial.println("System ready!");
+  // Initial scan
+  scanForSensors();
   
-  // Show initial display
-  updateDisplay(0, false);
+  displayMainScreen();
 }
 
-void loop(void) {
-  // Check all buttons
+void loop() {
+  // Check buttons
   for(int i = 0; i < NUM_BUTTONS; i++) {
     if(readButtonDebounced(i)) {
-      int buttonNumber = i + 1;
+      handleButton(i + 1);
+    }
+  }
+  
+  delay(10);
+}
+
+void handleButton(int buttonNum) {
+  Serial.print("Button ");
+  Serial.print(buttonNum);
+  Serial.println(" pressed");
+  
+  switch(buttonNum) {
+    case 1:  // Scan for sensors
+      scanForSensors();
+      currentSensorIndex = 0;
+      lastTemperature = -999.0;
+      break;
       
-      Serial.print("Button ");
-      Serial.print(buttonNumber);
-      Serial.println(" pressed!");
-      
-      if(buttonNumber == 5) {
-        // Button 5: Toggle LED cycling
-        ledCyclingActive = !ledCyclingActive;
-        
-        if(ledCyclingActive) {
-          Serial.println("LED cycling STARTED");
-          currentLED = 0;
-          lastLEDUpdate = millis();
-          turnOffAllLEDs();
-          digitalWrite(ledPins[currentLED], HIGH);
-        } else {
-          Serial.println("LED cycling STOPPED");
-          turnOffAllLEDs();
+    case 2:  // Previous sensor
+      if(sensorCount > 0) {
+        currentSensorIndex--;
+        if(currentSensorIndex < 0) {
+          currentSensorIndex = sensorCount - 1;
         }
+        lastTemperature = -999.0;
+      }
+      break;
+      
+    case 3:  // Next sensor
+      if(sensorCount > 0) {
+        currentSensorIndex++;
+        if(currentSensorIndex >= sensorCount) {
+          currentSensorIndex = 0;
+        }
+        lastTemperature = -999.0;
+      }
+      break;
+      
+    case 4:  // Read temperature
+      if(sensorCount > 0) {
+        lastTemperature = readTemperatureFromSensor(currentSensorIndex);
+      }
+      break;
+  }
+  
+  displayMainScreen();
+}
+
+void scanForSensors() {
+  Serial.println("Scanning for DS18B20 sensors...");
+  
+  sensorCount = 0;
+  ds.reset_search();
+  
+  displayScanningScreen();
+  
+  byte addr[8];
+  while(ds.search(addr)) {
+    // Verify CRC
+    if(OneWire::crc8(addr, 7) != addr[7]) {
+      Serial.println("CRC invalid, skipping device");
+      continue;
+    }
+    
+    // Check if it's a DS18B20
+    if(addr[0] != 0x10 && addr[0] != 0x28) {
+      Serial.println("Not a DS18B20, skipping");
+      continue;
+    }
+    
+    // Store the address
+    if(sensorCount < MAX_SENSORS) {
+      for(int i = 0; i < 8; i++) {
+        sensorAddresses[sensorCount][i] = addr[i];
       }
       
-      lastPressedButton = buttonNumber;
-      updateDisplay(buttonNumber, ledCyclingActive);
+      Serial.print("Sensor ");
+      Serial.print(sensorCount + 1);
+      Serial.print(" found: ");
+      printAddress(addr);
+      Serial.println();
+      
+      sensorCount++;
     }
   }
   
-  // Handle LED cycling
-  if(ledCyclingActive) {
-    if(millis() - lastLEDUpdate >= LED_CYCLE_INTERVAL) {
-      digitalWrite(ledPins[currentLED], LOW);
-      
-      currentLED++;
-      if(currentLED >= 6) {
-        currentLED = 0;  // Loop back to LED 1
-      }
-      
-      digitalWrite(ledPins[currentLED], HIGH);
-      
-      Serial.print("LED ");
-      Serial.print(currentLED + 1);
-      Serial.println(" ON");
-      
-      lastLEDUpdate = millis();
-      updateDisplay(lastPressedButton, ledCyclingActive);
+  ds.reset_search();
+  
+  Serial.print("Total sensors found: ");
+  Serial.println(sensorCount);
+  
+  delay(500);  // Brief pause to show scanning screen
+}
+
+float readTemperatureFromSensor(int index) {
+  if(index < 0 || index >= sensorCount) {
+    return -999.0;
+  }
+  
+  byte* addr = sensorAddresses[index];
+  byte data[12];
+  
+  // Start conversion
+  ds.reset();
+  ds.select(addr);
+  ds.write(0x44, 1);
+  
+  delay(1000);  // Wait for conversion
+  
+  // Read scratchpad
+  ds.reset();
+  ds.select(addr);
+  ds.write(0xBE);
+  
+  for(int i = 0; i < 9; i++) {
+    data[i] = ds.read();
+  }
+  
+  // Calculate temperature
+  int16_t raw = (data[1] << 8) | data[0];
+  float celsius = (float)raw / 16.0;
+  
+  Serial.print("Temperature from sensor ");
+  Serial.print(index + 1);
+  Serial.print(": ");
+  Serial.print(celsius);
+  Serial.println(" °C");
+  
+  return celsius;
+}
+
+void displayMainScreen() {
+  u8g2.clearBuffer();
+  
+  // Border
+  u8g2.drawFrame(0, 0, 128, 64);
+  
+  // Title
+  u8g2.setFont(u8g2_font_ncenB08_tr);
+  u8g2.drawStr(20, 10, "Sensor ID Tool");
+  u8g2.drawHLine(2, 12, 124);
+  
+  if(sensorCount == 0) {
+    // No sensors found
+    u8g2.setFont(u8g2_font_6x10_tr);
+    u8g2.drawStr(15, 28, "No sensors found");
+    u8g2.drawStr(10, 40, "Press BTN1 to scan");
+  } else {
+    // Show current sensor info
+    u8g2.setFont(u8g2_font_6x10_tr);
+    
+    // Sensor count and index
+    char countStr[30];
+    sprintf(countStr, "Sensor %d of %d", currentSensorIndex + 1, sensorCount);
+    int x = (128 - u8g2.getStrWidth(countStr)) / 2;
+    u8g2.drawStr(x, 22, countStr);
+    
+    // Address (split into two lines for readability)
+    u8g2.setFont(u8g2_font_5x7_tr);
+    char addrStr1[20];
+    char addrStr2[20];
+    byte* addr = sensorAddresses[currentSensorIndex];
+    
+    sprintf(addrStr1, "%02X%02X%02X%02X", addr[0], addr[1], addr[2], addr[3]);
+    sprintf(addrStr2, "%02X%02X%02X%02X", addr[4], addr[5], addr[6], addr[7]);
+    
+    u8g2.drawStr(20, 32, addrStr1);
+    u8g2.drawStr(20, 40, addrStr2);
+    
+    // Temperature if read
+    if(lastTemperature > -999.0) {
+      char tempStr[15];
+      dtostrf(lastTemperature, 5, 1, tempStr);
+      strcat(tempStr, " C");
+      u8g2.setFont(u8g2_font_6x10_tr);
+      int tx = (128 - u8g2.getStrWidth(tempStr)) / 2;
+      u8g2.drawStr(tx, 50, tempStr);
     }
   }
   
-  delay(1);
+  // Button help
+  u8g2.setFont(u8g2_font_4x6_tr);
+  u8g2.drawStr(2, 60, "1:Scan 2:< 3:> 4:Temp");
+  
+  u8g2.sendBuffer();
+}
+
+void displayWelcomeScreen() {
+  u8g2.clearBuffer();
+  u8g2.setFont(u8g2_font_ncenB10_tr);
+  u8g2.drawStr(8, 20, "DS18B20 Sensor");
+  u8g2.drawStr(25, 35, "Identifier");
+  u8g2.setFont(u8g2_font_6x10_tr);
+  u8g2.drawStr(28, 50, "Starting...");
+  u8g2.sendBuffer();
+  delay(2000);
+}
+
+void displayScanningScreen() {
+  u8g2.clearBuffer();
+  u8g2.setFont(u8g2_font_ncenB10_tr);
+  u8g2.drawStr(25, 30, "Scanning...");
+  u8g2.setFont(u8g2_font_6x10_tr);
+  u8g2.drawStr(15, 45, "Looking for sensors");
+  u8g2.sendBuffer();
 }
 
 bool readButtonDebounced(int buttonIndex) {
@@ -147,8 +282,7 @@ bool readButtonDebounced(int buttonIndex) {
     lastDebounceTime[buttonIndex] = millis();
   }
   
-  unsigned long timeDiff = millis() - lastDebounceTime[buttonIndex];
-  if(timeDiff >= DEBOUNCE_DELAY) {
+  if((millis() - lastDebounceTime[buttonIndex]) >= DEBOUNCE_DELAY) {
     if(reading != buttonState[buttonIndex]) {
       buttonState[buttonIndex] = reading;
       
@@ -163,67 +297,10 @@ bool readButtonDebounced(int buttonIndex) {
   return buttonPressed;
 }
 
-void updateDisplay(int buttonNum, bool cycling) {
-  // Clear the buffer
-  u8g2.clearBuffer();
-  
-  // Draw border frame
-  u8g2.drawFrame(0, 0, 128, 64);
-  
-  // Title at top
-  u8g2.setFont(u8g2_font_ncenB08_tr);
-  u8g2.drawStr(25, 12, "Button + LED");
-  
-  // Horizontal line separator
-  u8g2.drawHLine(2, 15, 124);
-  
-  // Display button number - LARGE
-  u8g2.setFont(u8g2_font_ncenB18_tr);
-  if(buttonNum > 0) {
-    char btnStr[10];
-    sprintf(btnStr, "BTN: %d", buttonNum);
-    int btnWidth = u8g2.getStrWidth(btnStr);
-    int btnX = (128 - btnWidth) / 2;
-    u8g2.drawStr(btnX, 35, btnStr);
-  } else {
-    u8g2.drawStr(30, 35, "BTN: --");
-  }
-  
-  // Display LED cycling status
-  u8g2.setFont(u8g2_font_6x10_tr);
-  if(cycling) {
-    char ledStr[20];
-    sprintf(ledStr, "Cycling: LED %d", currentLED + 1);
-    int ledWidth = u8g2.getStrWidth(ledStr);
-    int ledX = (128 - ledWidth) / 2;
-    u8g2.drawStr(ledX, 50, ledStr);
-  } else {
-    u8g2.drawStr(28, 50, "Cycling: OFF");
-  }
-  
-  // Status indicator at bottom
-  u8g2.setFont(u8g2_font_5x7_tr);
-  u8g2.drawStr(45, 60, "Ready");
-  
-  // Send buffer to display
-  u8g2.sendBuffer();
-}
-
-void displayWelcomeScreen() {
-  u8g2.clearBuffer();
-  u8g2.setFont(u8g2_font_ncenB10_tr);
-  u8g2.drawStr(25, 20, "ESP32 OLED");
-  u8g2.drawStr(15, 35, "Button & LED");
-  u8g2.setFont(u8g2_font_6x10_tr);
-  u8g2.drawStr(28, 50, "Initializing...");
-  u8g2.sendBuffer();
-  
-  Serial.println("Welcome screen displayed!");
-  delay(2000);
-}
-
-void turnOffAllLEDs() {
-  for(int i = 0; i < 6; i++) {
-    digitalWrite(ledPins[i], LOW);
+void printAddress(byte* addr) {
+  for(int i = 0; i < 8; i++) {
+    if(addr[i] < 16) Serial.print("0");
+    Serial.print(addr[i], HEX);
+    if(i < 7) Serial.print(":");
   }
 }
